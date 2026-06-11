@@ -53,8 +53,42 @@ fn entry_name_for(prefix: &str, key: &str) -> String {
 fn download_filename(prefix: &str) -> String {
     let trimmed = prefix.trim_end_matches('/');
     let segment = trimmed.rsplit('/').next().unwrap_or("");
-    let base = if segment.is_empty() { "download" } else { segment };
-    base.chars().filter(|c| !c.is_control() && *c != '"' && *c != '\\').collect()
+    let sanitized: String = segment
+        .chars()
+        .filter(|c| (c.is_ascii_graphic() && *c != '"' && *c != '\\') || *c == ' ')
+        .collect();
+    if sanitized.is_empty() {
+        "download".to_string()
+    } else {
+        sanitized
+    }
+}
+
+/// Outcome of a failed `produce_zip` run.
+#[derive(Debug)]
+pub(crate) enum ProduceZipError {
+    /// The client closed the connection mid-download. Expected; not alarming.
+    ClientDisconnected,
+    /// A genuine failure while listing, reading, or archiving.
+    Failed(String),
+}
+
+fn is_disconnect(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+    )
+}
+
+/// Classifies a writer error: a disconnect (broken pipe etc.) means the client
+/// went away; anything else is a real failure.
+fn classify_zip_error(err: rustfs_zip::ZipError, context: &str) -> ProduceZipError {
+    if let rustfs_zip::ZipError::Io(io_err) = &err
+        && is_disconnect(io_err.kind())
+    {
+        return ProduceZipError::ClientDisconnected;
+    }
+    ProduceZipError::Failed(format!("{context}: {err}"))
 }
 
 /// Lists every object under `prefix` and streams each into a ZIP written to `sink`.
@@ -66,7 +100,7 @@ pub(crate) async fn produce_zip<W>(
     prefix: String,
     method: ZipStreamMethod,
     sink: W,
-) -> std::result::Result<(), String>
+) -> std::result::Result<(), ProduceZipError>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
@@ -78,7 +112,7 @@ where
             .clone()
             .list_objects_v2(&bucket, &prefix, continuation.clone(), None, 1000, false, None, false)
             .await
-            .map_err(|e| format!("list_objects_v2 failed: {e}"))?;
+            .map_err(|e| ProduceZipError::Failed(format!("list_objects_v2 failed: {e}")))?;
 
         for object in page.objects {
             if object.is_dir {
@@ -87,20 +121,27 @@ where
             let reader = store
                 .get_object_reader(&bucket, &object.name, None, HeaderMap::new(), &ObjectOptions::default())
                 .await
-                .map_err(|e| format!("get_object_reader({}) failed: {e}", object.name))?;
+                .map_err(|e| ProduceZipError::Failed(format!("get_object_reader({}) failed: {e}", object.name)))?;
             let name = entry_name_for(&prefix, &object.name);
             zip.add(&name, reader.stream, method)
                 .await
-                .map_err(|e| format!("zip add({name}) failed: {e}"))?;
+                .map_err(|e| classify_zip_error(e, &format!("zip add({name})")))?;
         }
 
         match (page.is_truncated, page.next_continuation_token) {
             (true, Some(token)) => continuation = Some(token),
-            _ => break,
+            (true, None) => {
+                tracing::warn!(
+                    target: "rustfs::admin::download_zip",
+                    "list_objects_v2 truncated without continuation token; archive may be incomplete"
+                );
+                break;
+            }
+            (false, _) => break,
         }
     }
 
-    zip.finish().await.map_err(|e| format!("zip finish failed: {e}"))?;
+    zip.finish().await.map_err(|e| classify_zip_error(e, "zip finish"))?;
     Ok(())
 }
 
@@ -172,6 +213,8 @@ impl Operation for DownloadZipHandler {
 
         let query = DownloadZipQuery::from_uri(&req.uri)?;
 
+        // Require BOTH list permission on the bucket and read permission on the prefix:
+        // s3:ListBucket and s3:GetObject are independent IAM actions.
         validate_admin_request_with_bucket(
             &req.headers,
             &cred,
@@ -204,8 +247,14 @@ impl Operation for DownloadZipHandler {
         let prefix = query.prefix.clone();
         let method = query.method;
         tokio::spawn(async move {
-            if let Err(err) = produce_zip(store, bucket, prefix, method, zip_sink).await {
-                tracing::error!(target: "rustfs::admin::download_zip", error = %err, "zip production failed");
+            match produce_zip(store, bucket, prefix, method, zip_sink).await {
+                Ok(()) => {}
+                Err(ProduceZipError::ClientDisconnected) => {
+                    tracing::debug!(target: "rustfs::admin::download_zip", "download client disconnected before completion");
+                }
+                Err(ProduceZipError::Failed(msg)) => {
+                    tracing::error!(target: "rustfs::admin::download_zip", error = %msg, "zip production failed");
+                }
             }
         });
 
@@ -249,6 +298,7 @@ mod tests {
         assert_eq!(download_filename("a/b/c/"), "c");
         assert_eq!(download_filename(""), "download");
         assert_eq!(download_filename("we\"ird/"), "weird");
+        assert_eq!(download_filename("日本語/"), "download");
     }
 
     use rustfs_ecstore::bucket::metadata_sys;
