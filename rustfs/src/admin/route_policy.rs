@@ -860,6 +860,7 @@ pub const ADMIN_ROUTE_POLICY_SPECS: &[AdminRouteSpec] = &[
 
 pub const DEFERRED_ADMIN_ROUTE_POLICIES: &[DeferredAdminRoutePolicy] = &[
     deferred(HttpMethod::Get, "/rustfs/admin/v3/accountinfo", DeferredRoutePolicyReason::S3Action),
+    deferred(HttpMethod::Get, "/rustfs/admin/v3/download-zip", DeferredRoutePolicyReason::S3Action),
     deferred(
         HttpMethod::Get,
         "/rustfs/admin/v3/user-info",
