@@ -14,13 +14,13 @@
 
 //! Admin handler that streams a ZIP archive of every object under a prefix.
 
-use crate::admin::auth::{validate_admin_request_with_bucket, validate_admin_request_with_bucket_object, AdminResourceScope};
+use crate::admin::auth::{AdminResourceScope, validate_admin_request_with_bucket, validate_admin_request_with_bucket_object};
 use crate::admin::router::{AdminOperation, Operation, S3Router};
 use crate::auth::{check_key_valid, get_session_token};
 use crate::server::ADMIN_PREFIX;
 use bytes::Bytes;
 use futures::stream::StreamExt;
-use http::{header, HeaderMap, HeaderValue};
+use http::{HeaderMap, HeaderValue, header};
 use hyper::{Method, StatusCode};
 use matchit::Params;
 use rustfs_ecstore::new_object_layer_fn;
@@ -29,7 +29,7 @@ use rustfs_ecstore::store_api::{ListOperations, ObjectIO, ObjectOptions};
 use rustfs_policy::policy::action::{Action, S3Action};
 use rustfs_zip::{ZipStreamMethod, ZipStreamWriter};
 use s3s::stream::{ByteStream, DynByteStream};
-use s3s::{s3_error, Body, S3Request, S3Response, S3Result, StdError};
+use s3s::{Body, S3Request, S3Response, S3Result, StdError, s3_error};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -241,7 +241,9 @@ impl Operation for DownloadZipHandler {
         };
 
         let (zip_sink, zip_read) = tokio::io::duplex(256 * 1024);
-        let stream: DynByteStream = Box::pin(ZipReaderStream { inner: ReaderStream::new(zip_read) });
+        let stream: DynByteStream = Box::pin(ZipReaderStream {
+            inner: ReaderStream::new(zip_read),
+        });
 
         let bucket = query.bucket.clone();
         let prefix = query.prefix.clone();
@@ -307,12 +309,12 @@ mod tests {
     use rustfs_ecstore::store::ECStore;
     use rustfs_ecstore::store_api::{BucketOperations, ObjectIO, ObjectOptions, PutObjReader};
     use rustfs_storage_api::{BucketOptions, MakeBucketOptions};
+    use rustfs_zip::ZipStreamMethod;
     use std::path::PathBuf;
     use std::sync::Arc;
     use tokio::io::AsyncReadExt;
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
-    use rustfs_zip::ZipStreamMethod;
 
     async fn fresh_store() -> Arc<ECStore> {
         let base = PathBuf::from(format!("/tmp/rustfs_download_zip_test_{}", Uuid::new_v4()));
@@ -341,7 +343,10 @@ mod tests {
         let addr: std::net::SocketAddr = "127.0.0.1:9004".parse().unwrap();
         let store = ECStore::new(addr, pools, CancellationToken::new()).await.unwrap();
         let buckets = store
-            .list_bucket(&BucketOptions { no_metadata: true, ..Default::default() })
+            .list_bucket(&BucketOptions {
+                no_metadata: true,
+                ..Default::default()
+            })
             .await
             .unwrap()
             .into_iter()
@@ -360,13 +365,17 @@ mod tests {
     #[ignore = "requires isolated global disk state; run with --ignored --test-threads=1"]
     async fn produce_zip_archives_only_the_prefix() {
         let store = fresh_store().await;
-        store
-            .make_bucket("dltest", &MakeBucketOptions::default())
-            .await
-            .unwrap();
-        for (key, data) in [("p/a.txt", b"alpha".as_slice()), ("p/sub/b.txt", b"bravo"), ("other/c.txt", b"charlie")] {
+        store.make_bucket("dltest", &MakeBucketOptions::default()).await.unwrap();
+        for (key, data) in [
+            ("p/a.txt", b"alpha".as_slice()),
+            ("p/sub/b.txt", b"bravo"),
+            ("other/c.txt", b"charlie"),
+        ] {
             let mut reader = PutObjReader::from_vec(data.to_vec());
-            store.put_object("dltest", key, &mut reader, &ObjectOptions::default()).await.unwrap();
+            store
+                .put_object("dltest", key, &mut reader, &ObjectOptions::default())
+                .await
+                .unwrap();
         }
 
         let (sink, mut read_half) = tokio::io::duplex(64 * 1024);
