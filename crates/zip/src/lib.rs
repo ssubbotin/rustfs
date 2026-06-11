@@ -31,6 +31,9 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 pub type Result<T> = std::result::Result<T, ZipError>;
 
+mod zip_stream;
+pub use zip_stream::{ZipStreamMethod, ZipStreamWriter};
+
 #[derive(Debug, Error)]
 pub enum ZipError {
     #[error("unsupported {operation} for format {format:?}")]
@@ -54,6 +57,8 @@ pub enum ZipError {
     Io(#[from] io::Error),
     #[error(transparent)]
     Zip(#[from] zip::result::ZipError),
+    #[error(transparent)]
+    AsyncZip(#[from] async_zip::error::ZipError),
     #[error(transparent)]
     Join(#[from] tokio::task::JoinError),
 }
