@@ -17,6 +17,7 @@ pub mod audit;
 mod audit_runtime_config;
 pub mod bucket_meta;
 pub mod config_admin;
+pub mod download_zip;
 pub mod event;
 pub mod group;
 pub mod heal;
