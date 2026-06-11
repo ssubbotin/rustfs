@@ -286,6 +286,37 @@ pub fn register_download_zip_route(r: &mut S3Router<AdminOperation>) -> std::io:
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn download_zip_rejects_anonymous_request() {
+        use crate::admin::router::Operation;
+        use http::{Extensions, HeaderMap, Uri};
+        use hyper::Method;
+        use matchit::Params;
+        use s3s::{Body, S3ErrorCode, S3Request};
+
+        // An unauthenticated request must be rejected before any listing or object
+        // read happens — the route is gated on S3 ListBucket/GetObject.
+        let req = S3Request {
+            input: Body::empty(),
+            method: Method::GET,
+            uri: Uri::from_static("/rustfs/admin/v3/download-zip?bucket=demo&prefix=p/"),
+            headers: HeaderMap::new(),
+            extensions: Extensions::new(),
+            credentials: None,
+            region: None,
+            service: None,
+            trailing_headers: None,
+        };
+
+        let err = DownloadZipHandler {}
+            .call(req, Params::new())
+            .await
+            .expect_err("download-zip must reject anonymous requests before reading any data");
+
+        assert_eq!(err.code(), &S3ErrorCode::InvalidRequest);
+        assert_eq!(err.message(), Some("authentication required"));
+    }
+
     #[test]
     fn entry_name_uses_last_prefix_segment_as_root() {
         assert_eq!(entry_name_for("p/", "p/a.txt"), "p/a.txt");
