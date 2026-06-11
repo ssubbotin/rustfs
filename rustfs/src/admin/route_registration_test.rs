@@ -125,6 +125,7 @@ fn expected_admin_route_matrix() -> Vec<RouteMatrixEntry> {
         route(Method::POST, "/"),
         admin_route(Method::GET, "/v3/is-admin"),
         admin_route(Method::GET, "/v3/accountinfo"),
+        admin_route(Method::GET, "/v3/download-zip"),
         admin_route(Method::GET, "/v3/list-users"),
         admin_route(Method::GET, "/v3/user-info"),
         admin_route(Method::DELETE, "/v3/remove-user"),
