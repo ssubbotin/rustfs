@@ -47,6 +47,8 @@ impl From<ZipStreamMethod> for Compression {
 /// 65535 entries.
 pub struct ZipStreamWriter<W: tokio::io::AsyncWrite + Unpin> {
     inner: ZipFileWriter<W>,
+    /// Reused copy buffer, allocated once instead of per entry.
+    buf: Vec<u8>,
 }
 
 impl<W: tokio::io::AsyncWrite + Unpin> ZipStreamWriter<W> {
@@ -54,20 +56,20 @@ impl<W: tokio::io::AsyncWrite + Unpin> ZipStreamWriter<W> {
     pub fn new(sink: W) -> Self {
         Self {
             inner: ZipFileWriter::with_tokio(sink).force_zip64(),
+            buf: vec![0_u8; 64 * 1024],
         }
     }
 
     /// Append one entry named `name`, streaming all bytes from `reader`.
     pub async fn add<R: AsyncRead + Unpin>(&mut self, name: &str, mut reader: R, method: ZipStreamMethod) -> Result<()> {
-        let builder = ZipEntryBuilder::new(name.to_owned().into(), method.into());
+        let builder = ZipEntryBuilder::new(name.into(), method.into());
         let mut entry = self.inner.write_entry_stream(builder).await?;
-        let mut buf = vec![0_u8; 64 * 1024];
         loop {
-            let read = reader.read(&mut buf).await?;
+            let read = reader.read(&mut self.buf).await?;
             if read == 0 {
                 break;
             }
-            entry.write_all(&buf[..read]).await.map_err(ZipError::Io)?;
+            entry.write_all(&self.buf[..read]).await.map_err(ZipError::Io)?;
         }
         entry.close().await?;
         Ok(())
