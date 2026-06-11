@@ -251,11 +251,12 @@ mod tests {
         assert_eq!(download_filename("we\"ird/"), "weird");
     }
 
+    use rustfs_ecstore::bucket::metadata_sys;
     use rustfs_ecstore::disk::endpoint::Endpoint;
     use rustfs_ecstore::endpoints::{EndpointServerPools, Endpoints, PoolEndpoints};
     use rustfs_ecstore::store::ECStore;
-    use rustfs_ecstore::store_api::{BucketOperations, ObjectIO, ObjectOperations, ObjectOptions, PutObjReader};
-    use rustfs_storage_api::MakeBucketOptions;
+    use rustfs_ecstore::store_api::{BucketOperations, ObjectIO, ObjectOptions, PutObjReader};
+    use rustfs_storage_api::{BucketOptions, MakeBucketOptions};
     use std::path::PathBuf;
     use std::sync::Arc;
     use tokio::io::AsyncReadExt;
@@ -288,7 +289,16 @@ mod tests {
         let pools = EndpointServerPools(vec![pool]);
         rustfs_ecstore::store::init_local_disks(pools.clone()).await.unwrap();
         let addr: std::net::SocketAddr = "127.0.0.1:9004".parse().unwrap();
-        ECStore::new(addr, pools, CancellationToken::new()).await.unwrap()
+        let store = ECStore::new(addr, pools, CancellationToken::new()).await.unwrap();
+        let buckets = store
+            .list_bucket(&BucketOptions { no_metadata: true, ..Default::default() })
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|b| b.name)
+            .collect();
+        metadata_sys::init_bucket_metadata_sys(store.clone(), buckets).await;
+        store
     }
 
     // `#[ignore]`: spins up a global ECStore (`init_local_disks` mutates process-global
@@ -301,18 +311,18 @@ mod tests {
     async fn produce_zip_archives_only_the_prefix() {
         let store = fresh_store().await;
         store
-            .make_bucket("dl", &MakeBucketOptions::default())
+            .make_bucket("dltest", &MakeBucketOptions::default())
             .await
             .unwrap();
         for (key, data) in [("p/a.txt", b"alpha".as_slice()), ("p/sub/b.txt", b"bravo"), ("other/c.txt", b"charlie")] {
             let mut reader = PutObjReader::from_vec(data.to_vec());
-            store.put_object("dl", key, &mut reader, &ObjectOptions::default()).await.unwrap();
+            store.put_object("dltest", key, &mut reader, &ObjectOptions::default()).await.unwrap();
         }
 
         let (sink, mut read_half) = tokio::io::duplex(64 * 1024);
         let producer = tokio::spawn(produce_zip(
             store.clone(),
-            "dl".to_string(),
+            "dltest".to_string(),
             "p/".to_string(),
             ZipStreamMethod::Stored,
             sink,
